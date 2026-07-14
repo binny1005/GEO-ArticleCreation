@@ -9,8 +9,8 @@ venv/
 .env
 .env.local
 
-# Output
-output/
+# Generated output only (not source files)
+output/*/
 
 # IDE
 .vscode/

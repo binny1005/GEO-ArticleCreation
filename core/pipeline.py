@@ -27,6 +27,10 @@ from core.image_gen import (
     generate_title_image, generate_insert_images,
     TitleImage, InsertImage,
 )
+from core.article_reviewer import (
+    review_article, revise_article, format_review_markdown, ReviewResult,
+)
+from core.article_generators import generate_article as regen_article
 from prompts.image_styles import get_style
 from llm.router import get_router, LLMMessage
 from prompts.kb_analysis import (
@@ -112,6 +116,7 @@ class GEOPipeline:
         self.articles: list = []
         self.title_images: list[TitleImage] = []
         self.insert_images: list[list[InsertImage]] = []
+        self.review_results: list[ReviewResult] = []
 
     def _ask(self, prompt: str) -> bool:
         """交互式询问用户是否继续"""
@@ -313,7 +318,12 @@ class GEOPipeline:
 
         stage_list = [s.strip() for s in self.stages] if isinstance(self.stages, str) else self.stages
         has_seed_step = "seed" in stage_list
-        total_steps = len(stage_list) + (1 if self.enable_image else 0)
+        step_count = len(stage_list)
+        if "articles" in stage_list:
+            step_count += 1  # review step
+        if self.enable_image:
+            step_count += 1
+        total_steps = step_count
         current_step = 1
 
         # ── #5 知识库预检（步骤1之前）──
@@ -479,9 +489,121 @@ class GEOPipeline:
             save_articles(self.articles, self.out_dir)
             self._save_state("articles")
 
+            self._save_state("articles")
+
             current_step += 1
 
-        # ── [4] 配图提示词 (行业风格驱动，--image 启用) ──
+        # ── [4] 文章审核 + 修改 ──
+        if self.articles and not self._is_step_done("review"):
+            self._print_divider(f"[{current_step}/{total_steps}] 文章审核")
+            review_dir = self.out_dir / "reviews"
+            review_dir.mkdir(exist_ok=True)
+
+            revised_articles = []
+            for i, article in enumerate(self.articles):
+                print(f"\n  [{i+1}/{len(self.articles)}] {article.title[:40]}")
+                rr = review_article(
+                    question=article.seed_question,
+                    title=article.title,
+                    paper=article.paper,
+                )
+                self.review_results.append(rr)
+
+                status_label = {"pass": "✅ 通过", "revise": "⚠️ 需修改", "rewrite": "❌ 重写"}
+                print(f"    去AI化: {rr.ai_score}/100 | GEO收录: {rr.geo_score}/100 | {status_label.get(rr.overall, rr.overall)}")
+
+                # 保存审核报告
+                review_file = review_dir / f"{i+1:03d}_review.md"
+                with open(review_file, "w", encoding="utf-8") as f:
+                    f.write(format_review_markdown(rr, stage=article.stage, question=article.seed_question))
+
+                if rr.overall == "pass":
+                    # 直接通过
+                    print(f"    → 通过，无需修改")
+                    revised_articles.append(article)
+
+                elif rr.overall == "revise":
+                    # 局部修改
+                    print(f"    → 局部修改中...")
+                    revised = revise_article(article.title, article.paper, rr)
+                    article.title = revised["title"]
+                    article.paper = revised["paper"]
+                    print(f"    改动: {len(revised.get('changes', []))} 处")
+
+                    # 保存修改前后对比
+                    diff_file = review_dir / f"{i+1:03d}_diff.md"
+                    with open(diff_file, "w", encoding="utf-8") as f:
+                        f.write(f"# 修改前后对比\n\n")
+                        f.write(f"## 修改内容\n")
+                        for j, c in enumerate(revised.get("changes", [])):
+                            f.write(f"{j+1}. {c}\n")
+                        f.write(f"\n## 修改后文章\n\n")
+                        f.write(f"# {article.title}\n\n{article.paper}")
+                    print(f"    对比文件: {diff_file}")
+                    revised_articles.append(article)
+
+                elif rr.overall == "rewrite":
+                    # 回调步骤3重新生成（最多2次，防止死循环）
+                    MAX_REWRITES = 2
+                    rewrite_count = 0
+                    original_paper = article.paper
+
+                    while rewrite_count < MAX_REWRITES:
+                        rewrite_count += 1
+                        print(f"    → 重写第 {rewrite_count}/{MAX_REWRITES} 次...")
+                        rewrite_context = f"上次审核发现以下问题：{'；'.join(rr.suggestions[:3])}。请避免这些问题，重新生成。"
+                        new_article = regen_article(
+                            seed_question=article.seed_question,
+                            dimension=article.dimension,
+                            biz_params=self.biz_params,
+                            weights=self.weights,
+                            length_min=self.length_min,
+                            length_max=self.length_max,
+                            title_length=self.title_length,
+                            match_context=f"重写原因: {rewrite_context}",
+                        )
+                        article.title = new_article.title
+                        article.paper = new_article.paper
+                        article.stage = new_article.stage
+
+                        # 重新审核
+                        rr2 = review_article(
+                            question=article.seed_question,
+                            title=article.title,
+                            paper=article.paper,
+                        )
+                        self.review_results[-1] = rr2  # 更新为最新审核结果
+                        print(f"    重写后评分: 去AI化 {rr2.ai_score}/100 | GEO收录 {rr2.geo_score}/100 | {rr2.overall}")
+
+                        if rr2.overall == "pass":
+                            print(f"    → 重写通过")
+                            break
+                        elif rr2.overall == "revise":
+                            print(f"    → 转为局部修改")
+                            revised = revise_article(article.title, article.paper, rr2)
+                            article.title = revised["title"]
+                            article.paper = revised["paper"]
+                            break
+                        else:
+                            print(f"    → 仍需重写" if rewrite_count < MAX_REWRITES else f"    → 已达重写上限({MAX_REWRITES}次)，接受当前版本")
+
+                    # 保存重写记录
+                    diff_file = review_dir / f"{i+1:03d}_diff.md"
+                    with open(diff_file, "w", encoding="utf-8") as f:
+                        f.write(f"# 重写记录\n\n")
+                        f.write(f"重写次数: {rewrite_count}\n\n")
+                        f.write(f"## 重写后文章\n\n")
+                        f.write(f"# {article.title}\n\n{article.paper}")
+                    revised_articles.append(article)
+
+            # 保存最终文章
+            self.articles = revised_articles
+            save_articles(self.articles, self.out_dir)
+            self._save_state("review")
+
+            current_step += 1
+
+        # ── [5] 配图提示词 (行业风格驱动，--image 启用) ──
         if self.enable_image and self.articles and not self._is_step_done("images"):
             self._print_divider(f"[{current_step}/{total_steps}] 配图提示词")
 

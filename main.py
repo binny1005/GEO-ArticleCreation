@@ -248,18 +248,20 @@ def _print_dry_run(kb, industry, count, stages, enable_image, weights):
     typer.echo(f"  产品: {biz.coreProductName}")
     typer.echo(f"  行业: {industry}")
     typer.echo(f"  知识库: {len(biz.sections)} sections, {sections_count} fields")
+    review_tokens = 1000 if has_articles else 0
+    step = 1
     typer.echo(f"")
     typer.echo(f"  执行步骤:")
     if has_seed:
-        typer.echo(f"    1. 种子问题生成     → 生成 {count} 条, 预估 ~{seed_tokens} tokens")
+        typer.echo(f"    {step}. 种子问题生成     → 生成 {count} 条, 预估 ~{seed_tokens} tokens"); step += 1
     if has_match:
-        typer.echo(f"    {2 if has_seed else 1}. 字段匹配与评估   → 1 条种子匹配, 预估 ~{match_tokens} tokens")
+        typer.echo(f"    {step}. 字段匹配与评估   → 1 条种子匹配, 预估 ~{match_tokens} tokens"); step += 1
     if has_articles:
-        n = 3 if has_seed else (2 if has_match else 1)
-        typer.echo(f"    {n}. 文章生成          → {weights}, 预估 ~{article_tokens} tokens")
+        typer.echo(f"    {step}. 文章生成          → {weights}, 预估 ~{article_tokens} tokens"); step += 1
+        typer.echo(f"    {step}. 文章审核          → 去AI化+GEO收录评分, 预估 ~{review_tokens} tokens"); step += 1
     if enable_image:
-        n = 4 if has_seed else (3 if has_match else 2)
-        typer.echo(f"    {n}. 配图提示词        → 标题图+2插图, 预估 ~{image_tokens} tokens")
+        typer.echo(f"    {step}. 配图提示词        → 标题图+2插图, 预估 ~{image_tokens} tokens")
+    total_estimate += review_tokens
     typer.echo(f"")
     typer.echo(f"  预估总 tokens: ~{total_estimate}")
     typer.echo(f"{'='*60}")
