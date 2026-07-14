@@ -1,0 +1,18 @@
+# LLM 提供商配置 — 按 priority 排序，数字越小优先级越高
+# 环境变量引用方式: ${ENV_VAR}
+# 当前优先级 1 失败 → 自动 fallback 到优先级 2 → ...
+
+providers:
+  - name: deepseek-v3
+    type: openai_compat
+    base_url: https://api.deepseek.com/v1
+    api_key: ${DEEPSEEK_API_KEY}
+    model: deepseek-chat
+    priority: 1
+
+  - name: qwen3-max
+    type: openai_compat
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key: ${DASHSCOPE_API_KEY}
+    model: qwen3-max
+    priority: 2
