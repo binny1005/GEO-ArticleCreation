@@ -77,18 +77,19 @@ BASE_FIELD_SECTIONS = ["company_profile"]  # 企业基础信息所属的 section
 
 def extract_base_fields(biz_params: BizParams) -> str:
     """
-    提取企业基础信息字段（company_profile section），
-    作为步骤3生文的 baseFields 传入。
+    提取企业基础信息（仅取 company_name + company_positioning 共 2 行），
+    避免公司介绍段落与三阶段文章雷同。
     """
-    lines = []
+    company_name = biz_params.company_name or "(未知)"
+    positioning = ""
     for section in biz_params.sections:
         if section.sectionCode in BASE_FIELD_SECTIONS:
             for field in section.fields:
-                value = field.fieldValue or "(空)"
-                if len(value) > 300:
-                    value = value[:300] + "..."
-                lines.append(f"[{field.fieldKey}] {field.fieldLabel}: {value}")
-    return "\n".join(lines)
+                if field.fieldKey == "company_positioning" and field.fieldValue:
+                    positioning = field.fieldValue[:200]
+    if positioning:
+        return f"企业: {company_name}\n定位: {positioning}"
+    return f"企业: {company_name}"
 
 
 def resolve_referenced_fields(biz_params: BizParams, field_refs: list[str]) -> str:
